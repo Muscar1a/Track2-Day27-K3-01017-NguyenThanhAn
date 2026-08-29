@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-08-29T04:25:24.293512+00:00",
+  "orders_rows": 600,
+  "failed_contract_checks": 0,
+  "critical_contract_failures": 0,
+  "row_count_anomaly": {
+    "is_anomaly": true,
+    "score": 27.226166541953233,
+    "method": "auto:zscore",
+    "reason": "mean=250.833, std=12.825, threshold=3.0; context_ignored_by_starter=true"
+  },
+  "freshness_minutes": 5.07154625,
+  "kb_text_length_signal": {
+    "is_anomaly": false,
+    "score": 0.7547940916996035,
+    "method": "zscore",
+    "reason": "mean=14.834, std=1.015, threshold=3.0",
+    "metric": "mean_text_length",
+    "current_mean": 15.6
+  },
+  "contract_slo": {
+    "target": 0.999,
+    "actual_bad_rate": 0.0,
+    "allowed_bad_rate": 0.0010000000000000009,
+    "burn_rate": 0.0,
+    "remaining_error_budget_fraction": 1.0,
+    "breached": false
+  },
+  "sample_blast_radius_from_stg_orders": [
+    "fct_daily_revenue",
+    "ceo_revenue_dashboard"
+  ]
+}
