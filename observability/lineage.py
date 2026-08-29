@@ -30,26 +30,77 @@ def get_downstream_assets(graph: dict[str, list[str]], start: str) -> list[str]:
 def get_column_downstream(
     column_graph: dict[str, list[str]], start_column: str
 ) -> list[str]:
-    """TODO(student): implement column-level traversal.
+    """Return all transitive downstream columns in BFS order, excluding start."""
+    seen = {start_column}
+    q: deque[str] = deque([start_column])
+    out: list[str] = []
+    while q:
+        node = q.popleft()
+        for child in column_graph.get(node, []):
+            if child not in seen:
+                seen.add(child)
+                out.append(child)
+                q.append(child)
+    return out
 
-    Starter returns only direct children, so transitive hidden cases will fail.
+
+def _short_name(unique_id: str) -> str:
+    """Convert dbt unique_id to short asset name.
+
+    'model.data_reliability_lab.fct_daily_revenue' → 'fct_daily_revenue'
+    'seed.data_reliability_lab.orders' → 'orders'
+    'exposure.data_reliability_lab.ceo_revenue_dashboard' → 'ceo_revenue_dashboard'
     """
-    return list(column_graph.get(start_column, []))
+    parts = unique_id.split(".")
+    return parts[-1] if len(parts) >= 3 else unique_id
+
+
+_ASSET_TYPES = {"model", "seed", "exposure"}
 
 
 def extract_dbt_dataset_graph(manifest_path: str | Path) -> dict[str, list[str]]:
-    """Minimal dbt manifest parser.
+    """Parse dbt manifest.json into a dataset lineage graph.
 
-    It maps each dbt node unique_id to the nodes that depend on it. Students may
-    enrich names, exposures, owners, columns, or OpenLineage facets.
+    Only includes models, seeds, and exposures — skips tests and macros.
+    Node names are normalized to short names (last segment of unique_id).
     """
     path = Path(manifest_path)
     if not path.exists():
         return {}
     with open(path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
+
     graph: dict[str, list[str]] = {}
     child_map = manifest.get("child_map", {})
-    for parent, children in child_map.items():
-        graph[parent] = list(children)
+
+    for parent_id, children in child_map.items():
+        parent_type = parent_id.split(".")[0]
+        if parent_type not in _ASSET_TYPES:
+            continue
+
+        parent_name = _short_name(parent_id)
+        asset_children = [
+            _short_name(c)
+            for c in children
+            if c.split(".")[0] in _ASSET_TYPES
+        ]
+
+        if parent_name not in graph:
+            graph[parent_name] = []
+        graph[parent_name].extend(
+            c for c in asset_children if c not in graph[parent_name]
+        )
+
+    # Include exposures from the exposures block (dbt >= 1.0)
+    for exp_id, exp in manifest.get("exposures", {}).items():
+        exp_name = _short_name(exp_id)
+        for dep_id in exp.get("depends_on", {}).get("nodes", []):
+            dep_type = dep_id.split(".")[0]
+            if dep_type not in _ASSET_TYPES:
+                continue
+            dep_name = _short_name(dep_id)
+            graph.setdefault(dep_name, [])
+            if exp_name not in graph[dep_name]:
+                graph[dep_name].append(exp_name)
+
     return graph
