@@ -1,20 +1,18 @@
-"""Simple contract validator used as the starter baseline.
-
-The implementation intentionally covers only common deterministic checks.
-Students are expected to extend it with:
-- stronger type validation/coercion rules,
-- freshness checks,
-- cross-field/cross-table assertions,
-- severity-aware actions (block/quarantine/warn),
-- richer observability metadata.
-"""
+"""Contract validator with type, freshness, and action support."""
 from __future__ import annotations
 
+import json
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import yaml
+
+
+class DataBlockedError(Exception):
+    """Raised when critical contract violations are detected."""
 
 
 def _issue(
@@ -37,6 +35,82 @@ def _issue(
 def load_contract(path: str | Path) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _validate_type(
+    series: pd.Series, expected_type: str, column: str, severity: str
+) -> dict[str, Any] | None:
+    if expected_type == "integer":
+        numeric = pd.to_numeric(series, errors="coerce")
+        not_numeric = numeric.isna() & series.notna()
+        not_int = numeric.notna() & (numeric % 1 != 0)
+        invalid_count = int((not_numeric | not_int).sum())
+    elif expected_type == "number":
+        numeric = pd.to_numeric(series, errors="coerce")
+        invalid_count = int((numeric.isna() & series.notna()).sum())
+    elif expected_type == "datetime":
+        parsed = pd.to_datetime(series, errors="coerce", utc=True)
+        invalid_count = int((parsed.isna() & series.notna()).sum())
+    elif expected_type == "string":
+        invalid_count = 0
+    else:
+        return None
+    return _issue(
+        "type",
+        column=column,
+        severity=severity,
+        passed=(invalid_count == 0),
+        details=f"expected_type={expected_type}, invalid_count={invalid_count}",
+    )
+
+
+def _validate_freshness(df: pd.DataFrame, freshness_config: dict[str, Any]) -> dict[str, Any]:
+    """Compare freshness column against a reference timestamp within the data.
+
+    Reference = max(created_at) if present, else min(freshness_col).
+    delay = ref - max(freshness_col). Negative delay means data is being
+    updated after creation (healthy). Large positive delay means updates lag.
+    """
+    col = freshness_config.get("column")
+    max_delay = freshness_config.get("max_delay_minutes", 30)
+    severity = freshness_config.get("severity", "warning")
+
+    if col not in df.columns:
+        return _issue(
+            "freshness", column=col, severity=severity, passed=False,
+            details=f"freshness column '{col}' not found in dataframe",
+        )
+
+    parsed = pd.to_datetime(df[col], errors="coerce", utc=True)
+    if parsed.isna().all():
+        return _issue(
+            "freshness", column=col, severity=severity, passed=False,
+            details="all values in freshness column are unparseable",
+        )
+
+    max_updated = parsed.max()
+
+    if "created_at" in df.columns:
+        ref = pd.to_datetime(df["created_at"], errors="coerce", utc=True).max()
+        ref_label = "max(created_at)"
+    else:
+        ref = parsed.min()
+        ref_label = f"min({col})"
+
+    delay_minutes = (ref - max_updated).total_seconds() / 60.0
+    passed = delay_minutes <= max_delay
+
+    return _issue(
+        "freshness",
+        column=col,
+        severity=severity,
+        passed=passed,
+        details=(
+            f"delay_minutes={delay_minutes:.1f}, "
+            f"max_delay_minutes={max_delay}, "
+            f"ref={ref_label}"
+        ),
+    )
 
 
 def validate_dataframe(df: pd.DataFrame, contract: dict[str, Any]) -> list[dict[str, Any]]:
@@ -100,7 +174,6 @@ def validate_dataframe(df: pd.DataFrame, contract: dict[str, Any]) -> list[dict[
                 )
             )
 
-        # Starter numeric range support. Type validation is intentionally minimal.
         if "min" in rules or "max" in rules:
             numeric = pd.to_numeric(series, errors="coerce")
             invalid = pd.Series(False, index=series.index)
@@ -119,9 +192,15 @@ def validate_dataframe(df: pd.DataFrame, contract: dict[str, Any]) -> list[dict[
                 )
             )
 
-    # TODO(student): validate contract-level freshness using contract['freshness'].
-    # TODO(student): validate declared data types. pd.to_numeric(..., errors='coerce')
-    #                can silently hide string/type drift if you do not check it explicitly.
+        col_type = rules.get("type")
+        if col_type:
+            result = _validate_type(series, col_type, column, severity)
+            if result is not None:
+                issues.append(result)
+
+    freshness_config = contract.get("freshness")
+    if freshness_config:
+        issues.append(_validate_freshness(df, freshness_config))
 
     return issues
 
@@ -133,3 +212,49 @@ def failed_issues(issues: list[dict[str, Any]], min_severity: str | None = None)
     order = {"info": 0, "warning": 1, "critical": 2}
     threshold = order[min_severity]
     return [i for i in failed if order.get(i.get("severity", "warning"), 1) >= threshold]
+
+
+def apply_action(
+    issues: list[dict[str, Any]],
+    source_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Apply block/quarantine/warn based on issue severity.
+
+    critical failures → raise DataBlockedError (pipeline stops).
+    warning failures  → copy file to data/quarantine/ + write metadata JSON.
+    info/no failures  → warn only, pipeline continues.
+    """
+    failed = [i for i in issues if not i.get("passed", True)]
+    critical = [i for i in failed if i.get("severity") == "critical"]
+    warnings = [i for i in failed if i.get("severity") == "warning"]
+
+    if critical:
+        raise DataBlockedError(
+            f"{len(critical)} critical issue(s): "
+            + ", ".join(f"{i['check']}({i['column']})" for i in critical)
+        )
+
+    if warnings and source_path is not None:
+        src = Path(source_path)
+        if src.exists():
+            quarantine_dir = src.parent.parent / "quarantine"
+            quarantine_dir.mkdir(parents=True, exist_ok=True)
+            dest = quarantine_dir / src.name
+            shutil.copy2(src, dest)
+            meta = {
+                "quarantined_at": datetime.now(timezone.utc).isoformat(),
+                "source": str(src),
+                "warnings": [
+                    {"check": i["check"], "column": i["column"], "details": i["details"]}
+                    for i in warnings
+                ],
+            }
+            (quarantine_dir / (src.stem + "_meta.json")).write_text(
+                json.dumps(meta, indent=2)
+            )
+            return {"action": "quarantined", "quarantine_path": str(dest), "issues": failed}
+
+    if failed:
+        return {"action": "warned", "issues": failed}
+
+    return {"action": "passed", "issues": []}
