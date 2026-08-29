@@ -11,6 +11,7 @@ active_customers as (
     select *
     from {{ ref('stg_customers') }}
     where is_active = true
+      and valid_to is null
 )
 select
     o.order_date,

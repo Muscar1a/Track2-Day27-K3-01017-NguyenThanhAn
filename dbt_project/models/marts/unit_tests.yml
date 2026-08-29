@@ -21,8 +21,8 @@ unit_tests:
           - {order_id: 1, customer_id: C0001, amount_usd: 100.0, status: completed, order_date: '2026-08-01'}
       - input: ref('stg_customers')
         rows:
-          - {customer_id: C0001, is_active: true}
-          - {customer_id: C0001, is_active: true}
+          - {customer_id: C0001, is_active: true, valid_from: '2026-01-01', valid_to: '2026-06-01'}
+          - {customer_id: C0001, is_active: true, valid_from: '2026-06-01', valid_to: null}
     expect:
       rows:
         - {order_date: '2026-08-01', completed_order_rows: 1, daily_revenue: 100.0}
