@@ -1,15 +1,15 @@
 {
-  "timestamp": "2026-08-29T05:12:33.782558+00:00",
+  "timestamp": "2026-08-29T11:49:39.684781+00:00",
   "orders_rows": 150,
   "failed_contract_checks": 0,
   "critical_contract_failures": 0,
   "row_count_anomaly": {
     "is_anomaly": true,
-    "score": 7.862449049108215,
-    "method": "auto:zscore",
-    "reason": "mean=250.833, std=12.825, threshold=3.0; context_ignored_by_starter=true"
+    "score": 5.5309,
+    "method": "auto:mad",
+    "reason": "median=252.500, mad=12.500, threshold=3.0"
   },
-  "freshness_minutes": 5.146366033333334,
+  "freshness_minutes": 402.24472556666666,
   "kb_text_length_signal": {
     "is_anomaly": false,
     "score": 0.7547940916996035,
